@@ -37,6 +37,39 @@ function checkPassword(user, pw) {
   return crypto.timingSafeEqual(Buffer.from(hash), Buffer.from(user.password_hash));
 }
 
+// Set a new password for a user and clear the force-reset flag.
+function setPassword(userId, newPassword) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(newPassword, salt, 32).toString('hex');
+  db.prepare('UPDATE users SET password_hash=?, password_salt=?, must_change_password=0 WHERE id=?')
+    .run(hash, salt, userId);
+}
+
+// Basic in-memory login rate limiting (per email). Resets on server restart.
+const MAX_FAILS = 6, LOCK_MS = 15 * 60 * 1000;
+const attempts = new Map(); // email -> { fails, lockedUntil }
+function loginLocked(email) {
+  const a = attempts.get((email || '').toLowerCase());
+  if (a && a.lockedUntil && a.lockedUntil > Date.now()) return Math.ceil((a.lockedUntil - Date.now()) / 60000);
+  return 0;
+}
+function recordFail(email) {
+  const key = (email || '').toLowerCase();
+  const a = attempts.get(key) || { fails: 0, lockedUntil: 0 };
+  a.fails += 1;
+  if (a.fails >= MAX_FAILS) { a.lockedUntil = Date.now() + LOCK_MS; a.fails = 0; }
+  attempts.set(key, a);
+}
+function recordSuccess(email) { attempts.delete((email || '').toLowerCase()); }
+
+// Reject weak passwords.
+function passwordIssue(pw) {
+  if (!pw || pw.length < 10) return 'Password must be at least 10 characters.';
+  if (/^changeme/i.test(pw)) return 'Choose a password that is not the default.';
+  if (!/[a-z]/i.test(pw) || !/[0-9]/.test(pw)) return 'Use at least one letter and one number.';
+  return null;
+}
+
 // downline ids (recursive) for a manager/owner
 function downlineIds(userId) {
   const ids = new Set([userId]);
@@ -70,4 +103,5 @@ function canSeeAllAgents(user) {
   return user.role === 'owner' || user.role === 'admin' || user.role === 'manager';
 }
 
-module.exports = { sign, verify, checkPassword, downlineIds, leadScope, canSeeAllAgents };
+module.exports = { sign, verify, checkPassword, setPassword, downlineIds, leadScope, canSeeAllAgents,
+  loginLocked, recordFail, recordSuccess, passwordIssue };

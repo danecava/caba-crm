@@ -37,6 +37,7 @@ function init() {
     license_status TEXT DEFAULT 'licensed',
     monthly_goal_ap INTEGER DEFAULT 0,
     active INTEGER DEFAULT 1,
+    must_change_password INTEGER DEFAULT 1,
     created_at TEXT DEFAULT (datetime('now'))
   );
 
@@ -248,7 +249,19 @@ function seedIfEmpty() {
   console.log(`[seed] created team + ${made} leads + ${recruitNames.length} applicants. Default password: changeme123`);
 }
 
+// Migration: ensure must_change_password exists on databases created before
+// auth hardening, and force every existing account to reset on next login.
+function migrateAuth() {
+  const cols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+  if (!cols.includes('must_change_password')) {
+    db.exec('ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 1');
+    db.exec('UPDATE users SET must_change_password = 1');
+    console.log('[migrate] added must_change_password; all accounts must reset password on next login');
+  }
+}
+
 init();
 seedIfEmpty();
+migrateAuth();
 
 module.exports = { db, hashPassword };

@@ -109,14 +109,10 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
     <div class="logo">CABA LIFE<small>REVENUE &amp; RECRUITING ENGINE</small></div>
     <p class="muted" style="margin:14px 0 18px">Sign in to your book.</p>
     <div style="display:flex;flex-direction:column;gap:10px">
-      <input id="email" placeholder="email" autocomplete="username" value="dane@cabalife.com">
-      <input id="password" type="password" placeholder="password" autocomplete="current-password" value="changeme123">
+      <input id="email" placeholder="email" autocomplete="username">
+      <input id="password" type="password" placeholder="password" autocomplete="current-password">
       <button class="btn" onclick="login()">Sign in</button>
       <div id="loginErr" class="muted" style="color:var(--cold);font-size:13px;min-height:16px"></div>
-    </div>
-    <div class="muted" style="font-size:12px;margin-top:14px;line-height:1.7">
-      Try: <b>dane@cabalife.com</b> (owner) · <b>marcus@cabalife.com</b> (manager) ·
-      <b>jasmine@cabalife.com</b> (agent) · <b>bianca@cabalife.com</b> (recruiter)<br>password: <b>changeme123</b>
     </div>
   </div>
 </section>
@@ -128,6 +124,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
     <div class="who right">
       <div class="avatar" id="av">D</div>
       <div><div id="uname" style="font-weight:700"></div><div class="muted" id="urole" style="font-size:11px"></div></div>
+      <button class="btn ghost sm" onclick="openChangePassword()">Password</button>
       <button class="btn ghost sm" onclick="logout()">Exit</button>
     </div>
   </header>

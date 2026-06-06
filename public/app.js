@@ -37,6 +37,57 @@ function logout() {
   $('#app').classList.add('hidden'); $('#login').classList.remove('hidden');
 }
 
+async function submitPasswordChange(cur, nw, conf, errEl) {
+  errEl.textContent = '';
+  if (nw !== conf) { errEl.textContent = 'New passwords do not match.'; return false; }
+  try {
+    await api('/change-password', { method: 'POST', body: { current_password: cur, new_password: nw } });
+    ME.must_change_password = 0; toast('Password updated'); return true;
+  } catch (e) { errEl.textContent = e.message; return false; }
+}
+
+function renderForcedPasswordChange() {
+  const v = $('#view');
+  v.innerHTML = '';
+  const card = el(`<div class="card" style="padding:24px;max-width:420px;margin:8vh auto 0">
+    <div class="section-h">Secure your account</div>
+    <h2 style="margin:6px 0 6px">Set a new password</h2>
+    <p class="muted" style="margin:0 0 16px;font-size:14px">For security, you must replace the default password before using the CRM. Minimum 10 characters, with a letter and a number.</p>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <input id="cpCur" type="password" placeholder="current password">
+      <input id="cpNew" type="password" placeholder="new password">
+      <input id="cpConf" type="password" placeholder="confirm new password">
+      <button class="btn" id="cpGo">Update password</button>
+      <div id="cpErr" class="muted" style="color:var(--cold);font-size:13px;min-height:16px"></div>
+    </div></div>`);
+  card.querySelector('#cpGo').onclick = async () => {
+    const ok = await submitPasswordChange(card.querySelector('#cpCur').value, card.querySelector('#cpNew').value, card.querySelector('#cpConf').value, card.querySelector('#cpErr'));
+    if (ok) boot();
+  };
+  v.appendChild(card);
+}
+
+function openChangePassword() {
+  if (!ME) return;
+  const scrim = el('<div class="scrim"></div>');
+  const d = el(`<aside class="drawer" style="width:min(420px,100%)">
+    <header><div style="flex:1;font-weight:800;font-size:18px">Change password</div><button class="btn ghost sm" data-x>Close</button></header>
+    <div class="body">
+      <input id="mpCur" type="password" placeholder="current password">
+      <input id="mpNew" type="password" placeholder="new password">
+      <input id="mpConf" type="password" placeholder="confirm new password">
+      <button class="btn sm" data-go>Update password</button>
+      <div id="mpErr" class="muted" style="color:var(--cold);font-size:13px;min-height:16px"></div>
+    </div></aside>`);
+  const close = () => { scrim.remove(); d.remove(); };
+  scrim.onclick = close; d.querySelector('[data-x]').onclick = close;
+  d.querySelector('[data-go]').onclick = async () => {
+    const ok = await submitPasswordChange(d.querySelector('#mpCur').value, d.querySelector('#mpNew').value, d.querySelector('#mpConf').value, d.querySelector('#mpErr'));
+    if (ok) close();
+  };
+  $('#modalRoot').append(scrim, d);
+}
+
 const TABS = [
   { id: 'today', label: 'Today', roles: ['owner','manager','agent'] },
   { id: 'assistant', label: 'Assistant', roles: ['owner','manager','agent'] },
@@ -54,6 +105,8 @@ async function boot() {
   $('#login').classList.add('hidden'); $('#app').classList.remove('hidden');
   $('#uname').textContent = ME.name; $('#urole').textContent = titleize(ME.role);
   $('#av').textContent = (ME.name || '?')[0];
+  // Force a password change on first login (or after an admin reset).
+  if (ME.must_change_password) { $('#tabs').innerHTML = ''; renderForcedPasswordChange(); return; }
   const tabs = TABS.filter(t => t.roles.includes(ME.role));
   if (!tabs.find(t => t.id === TAB)) TAB = tabs[0].id;
   $('#tabs').innerHTML = '';

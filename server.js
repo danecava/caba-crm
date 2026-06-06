@@ -39,7 +39,7 @@ function userFromReq(req) {
   const token = hdr.startsWith('Bearer ') ? hdr.slice(7) : null;
   const claims = auth.verify(token);
   if (!claims) return null;
-  return db.prepare('SELECT id,name,email,role,upline_id,monthly_goal_ap FROM users WHERE id=?').get(claims.uid);
+  return db.prepare('SELECT id,name,email,role,upline_id,monthly_goal_ap,must_change_password FROM users WHERE id=?').get(claims.uid);
 }
 const monthStart = () => { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0,10); };
 const hoursSince = (ts) => ts ? (Date.now() - new Date(ts.replace(' ','T')).getTime()) / 3.6e6 : 9999;
@@ -62,16 +62,29 @@ async function api(req, res, url, user) {
   // ---- auth ----
   if (p === '/api/login' && req.method === 'POST') {
     const { email, password } = await readBody(req);
+    const lockedMin = auth.loginLocked(email);
+    if (lockedMin) return send(res, 429, { error: `Too many attempts. Try again in ${lockedMin} min.` });
     const u = db.prepare('SELECT * FROM users WHERE email=? AND active=1').get((email||'').toLowerCase().trim());
-    if (!u || !auth.checkPassword(u, password || '')) return send(res, 401, { error: 'Invalid credentials' });
+    if (!u || !auth.checkPassword(u, password || '')) { auth.recordFail(email); return send(res, 401, { error: 'Invalid credentials' }); }
+    auth.recordSuccess(email);
     const token = auth.sign({ uid: u.id, role: u.role });
-    return send(res, 200, { token, user: { id: u.id, name: u.name, role: u.role, email: u.email } });
+    return send(res, 200, { token, user: { id: u.id, name: u.name, role: u.role, email: u.email }, must_change_password: !!u.must_change_password });
   }
 
   // everything below requires a valid session
   if (!user) return send(res, 401, { error: 'Unauthorized' });
 
   if (p === '/api/me') return send(res, 200, { user, ai_enabled: ai.aiEnabled() });
+
+  if (p === '/api/change-password' && req.method === 'POST') {
+    const { current_password, new_password } = await readBody(req);
+    const full = db.prepare('SELECT * FROM users WHERE id=?').get(user.id);
+    if (!auth.checkPassword(full, current_password || '')) return send(res, 400, { error: 'Current password is incorrect.' });
+    const issue = auth.passwordIssue(new_password);
+    if (issue) return send(res, 400, { error: issue });
+    auth.setPassword(user.id, new_password);
+    return send(res, 200, { ok: true });
+  }
 
   // ---- pipeline (board) ----
   if (p === '/api/leads' && req.method === 'GET') {
