@@ -15,6 +15,9 @@ recruiting.init();
 const money = require('./lib/money');
 money.init();
 const ai = require('./lib/ai');
+const insurance = require('./lib/insurance');
+insurance.init();
+const admin = require('./lib/admin');
 const RECRUIT_ROLES = ['owner','admin','manager','recruiter'];
 
 const PORT = process.env.PORT || 3000;
@@ -22,7 +25,7 @@ const PUBLIC = path.join(__dirname, 'public');
 
 const STAGES = ['New','Contacted','Quoted','Application Submitted','Underwriting','Issued-Paid','Retention'];
 const STAGE_WEIGHT = { 'New':1.0,'Contacted':1.4,'Quoted':2.2,'Application Submitted':2.6,'Underwriting':1.6,'Issued-Paid':0.4,'Retention':0.3 };
-const RECRUIT_STAGES = ['Applied','Interview Booked','Offer/Contract','Licensing In-Progress','Appointed','Onboarding','Producing'];
+const RECRUIT_STAGES = ['Applied','Interview Booked','Offer/Contract','Licensing In-Progress','Appointed','Onboarding','Producing','Dropped'];
 
 // ---------- helpers ----------
 const send = (res, code, obj) => {
@@ -272,7 +275,7 @@ async function api(req, res, url, user) {
   if (p === '/api/scoreboard' && req.method === 'GET') {
     const ms = monthStart();
     // agency goal = sum of agent goals (owner can override via env later)
-    const agents = db.prepare("SELECT id,name,role,monthly_goal_ap FROM users WHERE active=1 AND role IN ('agent','manager') ORDER BY name").all();
+    const agents = db.prepare("SELECT id,name,role,monthly_goal_ap FROM users WHERE active=1 AND role IN ('owner','agent','manager') ORDER BY name").all();
     const board = agents.map((a) => {
       const ap = db.prepare("SELECT COALESCE(SUM(annual_premium),0) ap FROM policies WHERE agent_id=? AND status='issued_paid' AND issued_at>=?").get(a.id, ms).ap;
       const dials = db.prepare("SELECT COUNT(*) c FROM activities WHERE agent_id=? AND type='call' AND created_at>=date('now','-7 day')").get(a.id).c;
@@ -362,6 +365,35 @@ async function api(req, res, url, user) {
     if (action === 'pause') engine.pauseLead(id, 'manual');
     else { engine.enqueueCadence(id); engine.processDue(); }
     return send(res, 200, { ok: true });
+  }
+
+  // ---- Insurance: chargeback runway, earnings, carriers, comp grid ----
+  if (p === '/api/insurance/at-risk' && req.method === 'GET') return send(res, 200, insurance.atRisk(user));
+  if (p === '/api/insurance/earnings' && req.method === 'GET') return send(res, 200, insurance.earnings(user));
+  if (p === '/api/insurance/by-carrier' && req.method === 'GET') return send(res, 200, insurance.byCarrier(user));
+  if (p === '/api/insurance/comp-grid' && req.method === 'GET') return send(res, 200, { grid: insurance.compGrid() });
+  if (p === '/api/insurance/comp-grid' && req.method === 'POST') {
+    if (!['owner','admin','manager'].includes(user.role)) return send(res, 403, { error: 'Forbidden' });
+    const { carrier, product, rate } = await readBody(req);
+    insurance.setCompRate(carrier, product, Number(rate));
+    return send(res, 200, { ok: true });
+  }
+  m = p.match(/^\/api\/policies\/(\d+)\/payment$/);
+  if (m && req.method === 'POST') {
+    const { status } = await readBody(req);
+    insurance.markPayment(+m[1], status);
+    return send(res, 200, { ok: true });
+  }
+
+  // ---- Admin (owner only): wipe demo + bulk import ----
+  if (p === '/api/admin/wipe-demo' && req.method === 'POST') {
+    if (user.role !== 'owner') return send(res, 403, { error: 'Owner only' });
+    return send(res, 200, admin.wipeDemo());
+  }
+  if (p === '/api/admin/import' && req.method === 'POST') {
+    if (user.role !== 'owner') return send(res, 403, { error: 'Owner only' });
+    const payload = await readBody(req);
+    return send(res, 200, admin.importData(payload, user.id));
   }
 
   return send(res, 404, { error: 'No such endpoint' });

@@ -97,6 +97,7 @@ const TABS = [
   { id: 'onboarding', label: 'Onboarding', roles: ['owner','manager','recruiter','admin'] },
   { id: 'resources', label: 'Playbook', roles: ['owner','manager','agent','recruiter','admin'] },
   { id: 'commissions', label: 'Commissions', roles: ['owner','manager','agent','admin'] },
+  { id: 'insurance', label: 'Insurance', roles: ['owner','manager','agent','admin'] },
   { id: 'scoreboard', label: 'Scoreboard', roles: ['owner','manager','agent','recruiter','admin'] },
 ];
 
@@ -122,7 +123,66 @@ function render() {
   const v = $('#view'); v.innerHTML = '<p class="muted">Loading…</p>';
   ({ today: viewToday, assistant: viewAssistant, callnext: viewCallNext, pipeline: viewPipeline, recruiting: viewRecruiting,
      onboarding: viewOnboarding, resources: viewResources, commissions: viewCommissions,
-     scoreboard: viewScoreboard }[TAB])(v);
+     insurance: viewInsurance, scoreboard: viewScoreboard }[TAB])(v);
+}
+
+/* ---------- Insurance: chargeback runway, AP vs IP, carriers, comp grid ---------- */
+async function viewInsurance(v) {
+  v.innerHTML = '<h2 style="margin:0 0 12px">Insurance — your book of business</h2>';
+  const [e, risk, carr, cg] = await Promise.all([
+    api('/insurance/earnings'), api('/insurance/at-risk'), api('/insurance/by-carrier'), api('/insurance/comp-grid')
+  ]);
+
+  // top numbers
+  const nb = el('<div class="numberbar"></div>');
+  nb.appendChild(el(`<div class="stat"><div class="k">In-force premium (IP)</div><div class="v">${money(e.IP)}</div><div class="bar"><i style="width:${e.ip_ratio}%"></i></div><div class="muted" style="font-size:12px;margin-top:6px">${e.ip_ratio}% of ${money(e.AP)} sold (AP)</div></div>`));
+  nb.appendChild(el(`<div class="stat"><div class="k">Monthly commission</div><div class="v">${money(e.monthly_commission)}</div><div class="muted" style="font-size:12px;margin-top:6px">${money(e.annual_run_rate)}/yr run-rate</div></div>`));
+  nb.appendChild(el(`<div class="stat"><div class="k">In-force policies</div><div class="v">${e.counts.inforce}</div><div class="muted" style="font-size:12px;margin-top:6px">${e.counts.paying} actively paying</div></div>`));
+  nb.appendChild(el(`<div class="stat"><div class="k">Chargeback exposure</div><div class="v" style="color:${risk.totals.missed>0?'var(--cold)':'var(--warn)'}">${money(risk.totals.exposure_total)}</div><div class="muted" style="font-size:12px;margin-top:6px">${risk.totals.missed} missed · ${money(risk.totals.missed_exposure)} at risk now</div></div>`));
+  v.appendChild(nb);
+
+  // deposit forecast
+  v.appendChild(el('<div class="section-h" style="margin-top:6px">6-month deposit forecast</div>'));
+  const fc = el('<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">' +
+    e.forecast.map(f => `<div class="card" style="padding:10px 14px;min-width:96px"><div class="muted" style="font-size:12px">${esc(f.month)}</div><div style="font-weight:800;font-size:17px">${money(f.deposit)}</div></div>`).join('') + '</div>');
+  v.appendChild(fc);
+
+  // chargeback runway
+  v.appendChild(el(`<div class="section-h">⚠️ Chargeback runway <span class="muted" style="text-transform:none;font-weight:400">— issued policies until 12 months on the books; protect your advances</span></div>`));
+  const rt = el(`<table><thead><tr><th>Client</th><th>Carrier</th><th class="num">AP</th><th class="num">Comm</th><th class="num">On books</th><th class="num">Exposure</th><th>Payment</th></tr></thead><tbody></tbody></table>`);
+  const tb = rt.querySelector('tbody');
+  risk.rows.filter(r => r.in_window || r.risk === 'high').slice(0, 40).forEach(r => {
+    const color = r.risk === 'high' ? 'var(--cold)' : r.risk === 'watch' ? 'var(--warn)' : 'inherit';
+    const row = el(`<tr style="border-left:3px solid ${color}">
+      <td>${esc(r.name)}</td><td>${esc(r.carrier||'')}</td><td class="num">${money(r.annual)}</td>
+      <td class="num">${r.comm_pct!=null?r.comm_pct+'%':'—'}</td>
+      <td class="num">${r.months_on_books==null?'—':r.months_on_books+'mo'}</td>
+      <td class="num" style="color:${color}">${money(r.exposure)}</td>
+      <td><select data-pay style="width:auto;padding:4px 8px;font-size:12px">
+        <option value="active"${r.payment_status==='active'?' selected':''}>active</option>
+        <option value="missed"${r.payment_status==='missed'?' selected':''}>⚠ missed</option>
+        <option value="chargeback"${r.payment_status==='chargeback'?' selected':''}>chargeback</option></select></td></tr>`);
+    row.querySelector('[data-pay]').onchange = async (ev) => { await api(`/policies/${r.id}/payment`, { method:'POST', body:{ status: ev.target.value } }); toast('Updated'); render(); };
+    tb.appendChild(row);
+  });
+  v.appendChild(rt);
+
+  // by carrier
+  v.appendChild(el('<div class="section-h" style="margin-top:20px">In-force by carrier</div>'));
+  const ct = el(`<table><thead><tr><th>Carrier</th><th class="num">In-force / total</th><th class="num">In-force premium</th></tr></thead><tbody></tbody></table>`);
+  carr.carriers.forEach(c => ct.querySelector('tbody').appendChild(el(`<tr><td>${esc(c.carrier||'—')}</td><td class="num">${c.inforce} / ${c.policies}</td><td class="num"><b>${money(c.ip)}</b></td></tr>`)));
+  v.appendChild(ct);
+
+  // comp grid
+  const canEdit = ['owner','manager','admin'].includes(ME.role);
+  v.appendChild(el('<div class="section-h" style="margin-top:20px">Comp grid <span class="muted" style="text-transform:none;font-weight:400">— commission % by carrier / product</span></div>'));
+  const gt = el(`<table><thead><tr><th>Carrier</th><th>Product</th><th class="num">Rate %</th></tr></thead><tbody></tbody></table>`);
+  cg.grid.forEach(r => {
+    const tr = el(`<tr><td>${esc(r.carrier||'')}</td><td>${esc(r.product||'')}</td><td class="num">${canEdit?`<input value="${r.rate}" data-rate style="width:80px;text-align:right;padding:4px 8px">`:r.rate+'%'}</td></tr>`);
+    if (canEdit) tr.querySelector('[data-rate]').onchange = async (ev) => { await api('/insurance/comp-grid', { method:'POST', body:{ carrier:r.carrier, product:r.product, rate:Number(ev.target.value) } }); toast('Rate saved'); };
+    gt.querySelector('tbody').appendChild(tr);
+  });
+  v.appendChild(gt);
 }
 
 /* ---------- Assistant (AI) ---------- */
