@@ -1,0 +1,15 @@
+{
+  "name": "caba-crm",
+  "version": "0.1.0",
+  "description": "Caba Life CRM — revenue & recruiting engine for a virtual life insurance agency. Zero dependencies; runs on Node 22 built-ins.",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}

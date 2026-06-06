@@ -1,0 +1,19 @@
+# Render Blueprint — one-click deploy for Caba Life CRM.
+# In Render: New → Blueprint → connect the repo containing this file.
+services:
+  - type: web
+    name: caba-life-crm
+    runtime: docker
+    plan: free
+    envVars:
+      - key: JWT_SECRET
+        generateValue: true          # Render generates a strong secret
+      - key: AGENCY_GOAL_AP
+        value: "125000"              # your monthly AP goal — edit anytime
+      - key: AGENCY_NAME
+        value: "Caba Life"
+      # - key: ANTHROPIC_API_KEY     # add to switch the AI layer to live NL
+      #   sync: false
+      # - key: AI_MODEL
+      #   value: "claude-3-5-haiku-latest"
+    healthCheckPath: /
