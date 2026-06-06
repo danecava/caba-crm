@@ -146,13 +146,13 @@ function seedIfEmpty() {
   }
 
   // Owner + team. Default password for everyone: changeme123
-  const owner = addUser('Dane (Owner)', 'dane@cabalife.com', 'owner', null, 0);
-  const mgr   = addUser('Marcus Lee (Manager)', 'marcus@cabalife.com', 'manager', owner, 30000);
-  const a1 = addUser('Jasmine Cole', 'jasmine@cabalife.com', 'agent', mgr, 25000);
-  const a2 = addUser('Tyrell Banks', 'tyrell@cabalife.com', 'agent', mgr, 25000);
-  const a3 = addUser('Priya Nair', 'priya@cabalife.com', 'agent', mgr, 20000, 'in_progress');
-  const a4 = addUser('Diego Ramos', 'diego@cabalife.com', 'agent', owner, 25000);
-  const rec = addUser('Bianca Ford (Recruiter)', 'bianca@cabalife.com', 'recruiter', owner, 0);
+  const owner = addUser('Dane (Owner)', 'dane@cavalife.com', 'owner', null, 0);
+  const mgr   = addUser('Marcus Lee (Manager)', 'marcus@cavalife.com', 'manager', owner, 30000);
+  const a1 = addUser('Jasmine Cole', 'jasmine@cavalife.com', 'agent', mgr, 25000);
+  const a2 = addUser('Tyrell Banks', 'tyrell@cavalife.com', 'agent', mgr, 25000);
+  const a3 = addUser('Priya Nair', 'priya@cavalife.com', 'agent', mgr, 20000, 'in_progress');
+  const a4 = addUser('Diego Ramos', 'diego@cavalife.com', 'agent', owner, 25000);
+  const rec = addUser('Bianca Ford (Recruiter)', 'bianca@cavalife.com', 'recruiter', owner, 0);
   const agents = [a1, a2, a3, a4];
 
   const src = db.prepare(`INSERT INTO sources (name,channel,cta_keyword,funnel,spend) VALUES (?,?,?,?,?)`);
@@ -260,8 +260,19 @@ function migrateAuth() {
   }
 }
 
+// Migration: rebrand existing account emails on databases seeded under the old
+// name. Passwords/roles are untouched — only the address changes.
+function migrateBrand() {
+  const stale = db.prepare("SELECT COUNT(*) c FROM users WHERE email LIKE '%@cabalife.com'").get().c;
+  if (stale) {
+    db.prepare("UPDATE users SET email = REPLACE(email, '@cabalife.com', '@cavalife.com')").run();
+    console.log(`[migrate] rebranded ${stale} account email(s) @cabalife.com -> @cavalife.com`);
+  }
+}
+
 init();
 seedIfEmpty();
 migrateAuth();
+migrateBrand();
 
 module.exports = { db, hashPassword };

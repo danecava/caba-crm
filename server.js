@@ -393,7 +393,7 @@ http.createServer(async (req, res) => {
     return send(res, 500, { error: 'Server error', detail: String(e.message || e) });
   }
 }).listen(PORT, () => {
-  console.log(`\n  Caba Life CRM running →  http://localhost:${PORT}`);
+  console.log(`\n  Cava Life CRM running →  http://localhost:${PORT}`);
   console.log(`  Login: dane@cabalife.com / changeme123  (owner)`);
   console.log(`  Agent: jasmine@cabalife.com / changeme123\n`);
 
