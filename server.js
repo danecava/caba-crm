@@ -273,7 +273,21 @@ async function api(req, res, url, user) {
 
   // ---- scoreboard ----
   if (p === '/api/scoreboard' && req.method === 'GET') {
-    const ms = monthStart();
+    const range = (url.searchParams.get('range') || 'mtd').toLowerCase();
+    const nowD = new Date();
+    const iso = (d) => d.toISOString().slice(0, 10);
+    let periodStart, priorStart, priorEnd;
+    if (range === 'wtd') {
+      const day = nowD.getDay(); const ws = new Date(nowD); ws.setDate(nowD.getDate() - day);
+      periodStart = iso(ws); const pw = new Date(ws); pw.setDate(ws.getDate() - 7); priorStart = iso(pw); priorEnd = periodStart;
+    } else if (range === 'ytd') {
+      periodStart = iso(new Date(nowD.getFullYear(), 0, 1));
+      priorStart = iso(new Date(nowD.getFullYear() - 1, 0, 1)); priorEnd = iso(new Date(nowD.getFullYear() - 1, nowD.getMonth(), nowD.getDate()));
+    } else {
+      periodStart = monthStart();
+      priorStart = iso(new Date(nowD.getFullYear(), nowD.getMonth() - 1, 1)); priorEnd = periodStart;
+    }
+    const ms = periodStart;
     // agency goal = sum of agent goals (owner can override via env later)
     const agents = db.prepare("SELECT id,name,role,monthly_goal_ap FROM users WHERE active=1 AND role IN ('owner','agent','manager') ORDER BY name").all();
     const board = agents.map((a) => {
@@ -286,6 +300,9 @@ async function api(req, res, url, user) {
     }).sort((x, y) => y.ap - x.ap);
 
     const agencyAP = board.reduce((s, r) => s + r.ap, 0);
+    // prior-period agency AP for %-delta
+    const priorAP = db.prepare("SELECT COALESCE(SUM(annual_premium),0) ap FROM policies WHERE status='issued_paid' AND issued_at>=? AND issued_at<?").get(priorStart, priorEnd).ap;
+    const apDelta = priorAP ? Math.round((agencyAP - priorAP) / priorAP * 100) : null;
     const agencyGoal = Number(process.env.AGENCY_GOAL_AP) || board.reduce((s, r) => s + r.goal, 0);
     const now = new Date();
     const dayOfMonth = now.getDate();
@@ -304,9 +321,9 @@ async function api(req, res, url, user) {
     if (!auth.canSeeAllAgents(user)) {
       // agents see only their own row + the agency number for motivation
       const mine = board.find((b) => b.id === user.id) || null;
-      return send(res, 200, { scope: 'self', mine, agencyAP, agencyGoal, expectedByNow, onPace, goingCold });
+      return send(res, 200, { scope: 'self', mine, agencyAP, agencyGoal, expectedByNow, onPace, goingCold, range, apDelta, priorAP });
     }
-    return send(res, 200, { scope: 'team', board, agencyAP, agencyGoal, expectedByNow, onPace, dialsNeeded, daysInMonth, dayOfMonth, goingCold });
+    return send(res, 200, { scope: 'team', board, agencyAP, agencyGoal, expectedByNow, onPace, dialsNeeded, daysInMonth, dayOfMonth, goingCold, range, apDelta, priorAP });
   }
 
   // ---- Phase 2: intake / speed-to-lead ----
@@ -394,6 +411,41 @@ async function api(req, res, url, user) {
     if (user.role !== 'owner') return send(res, 403, { error: 'Owner only' });
     const payload = await readBody(req);
     return send(res, 200, admin.importData(payload, user.id));
+  }
+
+  // ---- Sprint 1: persistency + carrier reconciliation ----
+  if (p === '/api/insurance/persistency' && req.method === 'GET') return send(res, 200, insurance.persistency(user));
+  if (p === '/api/insurance/reconcile' && req.method === 'POST') {
+    const { rows } = await readBody(req);
+    return send(res, 200, insurance.reconcile(user, rows || []));
+  }
+
+  // ---- Sprint 1: user management (owner only) ----
+  if (p === '/api/admin/users' && req.method === 'GET') {
+    if (user.role !== 'owner') return send(res, 403, { error: 'Owner only' });
+    return send(res, 200, { users: admin.listUsers() });
+  }
+  if (p === '/api/admin/users' && req.method === 'POST') {
+    if (user.role !== 'owner') return send(res, 403, { error: 'Owner only' });
+    const r = admin.createUser(await readBody(req));
+    return send(res, r.error ? 400 : 200, r);
+  }
+  m = p.match(/^\/api\/admin\/users\/(\d+)$/);
+  if (m && req.method === 'PATCH') {
+    if (user.role !== 'owner') return send(res, 403, { error: 'Owner only' });
+    return send(res, 200, admin.updateUser(+m[1], await readBody(req)));
+  }
+  m = p.match(/^\/api\/admin\/users\/(\d+)\/active$/);
+  if (m && req.method === 'POST') {
+    if (user.role !== 'owner') return send(res, 403, { error: 'Owner only' });
+    const { active } = await readBody(req);
+    return send(res, 200, admin.setActive(+m[1], active));
+  }
+  m = p.match(/^\/api\/admin\/users\/(\d+)\/reset-password$/);
+  if (m && req.method === 'POST') {
+    if (user.role !== 'owner') return send(res, 403, { error: 'Owner only' });
+    const r = admin.resetPassword(+m[1]);
+    return send(res, r.error ? 400 : 200, r);
   }
 
   return send(res, 404, { error: 'No such endpoint' });

@@ -3,12 +3,24 @@
 let TOKEN = localStorage.getItem('caba_token') || null;
 let ME = null;
 let TAB = 'today';
+let SB_RANGE = 'mtd';
 
 const $ = (s, r = document) => r.querySelector(s);
 const el = (h) => { const t = document.createElement('template'); t.innerHTML = h.trim(); return t.content.firstChild; };
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
 const money = (n) => '$' + (Number(n) || 0).toLocaleString();
 const titleize = (s) => String(s || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+// Pinned metric definitions (from the research metrics dictionary)
+const DEFS = {
+  AP: 'Annualized Premium = monthly premium × 12, on placed policies. Your production currency.',
+  IP: 'In-Force Premium = sum of annualized premium for all active, premium-paying policies. Excludes pending, lapsed, declined.',
+  persistency: 'Persistency = policies still in force ÷ policies placed. By count (each policy equal) and by premium (weights larger policies). Headline = 13-month; populates as the book ages.',
+  chargeback: 'Chargeback exposure = unearned advanced commission if a policy lapses inside the 12-month window. Advanced × (1 − months paid ÷ advance months).',
+  monthlyComm: 'Monthly commission run-rate = sum over actively-paying in-force policies of (annual premium ÷ 12 × commission %).',
+  delta: 'Change vs the prior equivalent period (prior week / month / year-to-date).',
+};
+const info = (k) => DEFS[k] ? `<span class="info" title="${esc(DEFS[k])}">i</span>` : '';
 
 async function api(path, opts = {}) {
   const headers = { 'content-type': 'application/json' };
@@ -99,6 +111,7 @@ const TABS = [
   { id: 'commissions', label: 'Commissions', roles: ['owner','manager','agent','admin'] },
   { id: 'insurance', label: 'Insurance', roles: ['owner','manager','agent','admin'] },
   { id: 'scoreboard', label: 'Scoreboard', roles: ['owner','manager','agent','recruiter','admin'] },
+  { id: 'team', label: 'Team', roles: ['owner','admin'] },
 ];
 
 async function boot() {
@@ -123,23 +136,121 @@ function render() {
   const v = $('#view'); v.innerHTML = '<p class="muted">Loading…</p>';
   ({ today: viewToday, assistant: viewAssistant, callnext: viewCallNext, pipeline: viewPipeline, recruiting: viewRecruiting,
      onboarding: viewOnboarding, resources: viewResources, commissions: viewCommissions,
-     insurance: viewInsurance, scoreboard: viewScoreboard }[TAB])(v);
+     insurance: viewInsurance, scoreboard: viewScoreboard, team: viewTeam }[TAB])(v);
+}
+
+/* ---------- Team (user management — owner) ---------- */
+async function viewTeam(v) {
+  v.innerHTML = '<h2 style="margin:0 0 4px">Team</h2><p class="muted" style="margin:0 0 14px">Add your real downline as logins, set contract levels and uplines, reset passwords.</p>';
+  const { users } = await api('/admin/users');
+  const agents = users.filter(u => u.role !== 'owner');
+  // Add-user form
+  const form = el(`<div class="card" style="padding:16px;max-width:760px;margin-bottom:16px">
+    <div class="section-h">Add a team member</div>
+    <div class="grid2"><input id="tuName" placeholder="Full name"><input id="tuEmail" placeholder="email"></div>
+    <div class="grid2" style="margin-top:8px">
+      <select id="tuRole"><option value="agent">Agent</option><option value="manager">Manager</option><option value="recruiter">Recruiter</option></select>
+      <input id="tuComp" type="number" step="1" placeholder="contract level % (e.g. 80)">
+    </div>
+    <div class="grid2" style="margin-top:8px">
+      <select id="tuUpline"><option value="">Upline: (none / direct to you)</option>${users.map(u=>`<option value="${u.id}">${esc(u.name)}</option>`).join('')}</select>
+      <input id="tuGoal" type="number" step="1000" placeholder="monthly AP goal $ (optional)">
+    </div>
+    <button class="btn sm" id="tuAdd" style="margin-top:10px">Add member</button>
+    <div id="tuOut" style="font-size:13px;margin-top:8px"></div></div>`);
+  form.querySelector('#tuAdd').onclick = async () => {
+    const out = form.querySelector('#tuOut');
+    const body = { name: form.querySelector('#tuName').value.trim(), email: form.querySelector('#tuEmail').value.trim(),
+      role: form.querySelector('#tuRole').value, comp_rate: (Number(form.querySelector('#tuComp').value)||0)/100,
+      upline_id: form.querySelector('#tuUpline').value || null, monthly_goal_ap: Number(form.querySelector('#tuGoal').value)||0 };
+    try { const r = await api('/admin/users', { method:'POST', body });
+      out.innerHTML = `<div class="tl" style="border-left:3px solid var(--good)">Added <b>${esc(body.name)}</b>. Temp password: <b class="accent">${esc(r.temp_password)}</b> — share it; they'll be forced to change it on first login.</div>`;
+      render();
+    } catch(e){ out.innerHTML = '<span style="color:var(--cold)">'+esc(e.message)+'</span>'; }
+  };
+  v.appendChild(form);
+
+  v.appendChild(el(`<div class="section-h">Members (${agents.length})</div>`));
+  const t = el(`<table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Upline</th><th class="num">Contract</th><th>Status</th><th>Actions</th></tr></thead><tbody></tbody></table>`);
+  const tb = t.querySelector('tbody');
+  agents.forEach(u => {
+    const row = el(`<tr ${u.active?'':'style="opacity:.5"'}>
+      <td>${esc(u.name)}</td><td class="muted">${esc(u.email)}</td><td>${esc(titleize(u.role))}</td>
+      <td>${esc(u.upline_name||'—')}</td><td class="num">${u.comp_rate?Math.round(u.comp_rate*100)+'%':'—'}</td>
+      <td>${u.active?'<span class="pill">active</span>':'<span class="tag-pace pace-off">inactive</span>'}</td>
+      <td><button class="btn ghost sm" data-reset>Reset PW</button> <button class="btn ghost sm" data-active>${u.active?'Deactivate':'Reactivate'}</button></td></tr>`);
+    row.querySelector('[data-reset]').onclick = async () => { const r = await api(`/admin/users/${u.id}/reset-password`, {method:'POST'}); toast('New temp password: '+r.temp_password); };
+    row.querySelector('[data-active]').onclick = async () => { await api(`/admin/users/${u.id}/active`, {method:'POST', body:{active: u.active?0:1}}); render(); };
+    tb.appendChild(row);
+  });
+  if (!agents.length) tb.appendChild(el('<tr><td colspan="7" class="muted">No team members yet — add your producers above.</td></tr>'));
+  v.appendChild(t);
+}
+
+/* ---------- Carrier reconciliation ---------- */
+function parseReconRows(text) {
+  // accepts CSV / pasted rows: policy_number[,monthly_premium] per line (header optional)
+  const rows = [];
+  text.split(/\r?\n/).forEach(line => {
+    const parts = line.split(/[,\t]/).map(s => s.trim());
+    const pn = parts[0];
+    if (!pn || /policy|number/i.test(pn)) return;
+    const prem = parts.find((p, i) => i > 0 && /^\$?\d+(\.\d+)?$/.test(p));
+    rows.push({ policy_number: pn, monthly_premium: prem ? Number(prem.replace('$', '')) : null });
+  });
+  return rows;
+}
+function openReconcile() {
+  const scrim = el('<div class="scrim"></div>');
+  const d = el(`<aside class="drawer" style="width:min(560px,100%)">
+    <header><div style="flex:1;font-weight:800;font-size:18px">Reconcile against carrier file</div><button class="btn ghost sm" data-x>Close</button></header>
+    <div class="body">
+      <p class="muted" style="font-size:13px;margin:0">Paste rows from a carrier in-force / commission report — one per line, <b>policy number</b> first, optional monthly premium after a comma. I'll match against your in-force book and flag silent lapses, premium mismatches, and policies missing from your CRM.</p>
+      <textarea id="rcText" rows="7" placeholder="AM03021214, 161.92&#10;BU6372574, 43.00&#10;..."></textarea>
+      <div class="row" style="display:flex;gap:8px;margin-top:8px"><button class="btn sm" data-run>Run reconciliation</button></div>
+      <div id="rcOut" style="margin-top:12px"></div>
+    </div></aside>`);
+  const close = () => { scrim.remove(); d.remove(); };
+  scrim.onclick = close; d.querySelector('[data-x]').onclick = close;
+  d.querySelector('[data-run]').onclick = async () => {
+    const rows = parseReconRows(d.querySelector('#rcText').value);
+    const out = d.querySelector('#rcOut');
+    if (!rows.length) { out.innerHTML = '<span class="muted">No rows detected — paste policy numbers first.</span>'; return; }
+    out.innerHTML = '<span class="muted">Reconciling…</span>';
+    const r = await api('/insurance/reconcile', { method: 'POST', body: { rows } });
+    const s = r.summary;
+    const block = (title, color, items, render) => items.length ? `<div class="section-h" style="margin-top:10px;color:${color}">${title} (${items.length})</div>` + items.slice(0,30).map(render).join('') : '';
+    out.innerHTML = `<div class="numberbar" style="grid-template-columns:repeat(2,1fr);gap:8px">
+        <div class="stat"><div class="k">Matched</div><div class="v" style="color:var(--good)">${s.matched}</div></div>
+        <div class="stat"><div class="k">Exceptions</div><div class="v" style="color:var(--cold)">${s.premium_mismatch + s.not_in_carrier_file + s.missing_in_crm}</div></div></div>`
+      + block('⚠ In your CRM but NOT in carrier file (possible silent lapse / not yet reported)', 'var(--cold)', r.not_in_carrier_file, x => `<div class="tl"><b>${esc(x.name)}</b> · ${esc(x.policy_number||'no #')} · ${esc(x.carrier||'')} · ${money(x.annual)}/yr</div>`)
+      + block('≠ Premium mismatch', 'var(--warn)', r.premium_mismatch, x => `<div class="tl">${esc(x.name)} · ${esc(x.policy_number)} — CRM $${x.crm_monthly}/mo vs carrier $${x.carrier_monthly}/mo</div>`)
+      + block('＋ In carrier file but missing from your CRM', 'var(--info)', r.missing_in_crm, x => `<div class="tl">${esc(x.policy_number)}${x.monthly_premium?' · $'+x.monthly_premium+'/mo':''}</div>`);
+  };
+  $('#modalRoot').append(scrim, d);
 }
 
 /* ---------- Insurance: chargeback runway, AP vs IP, carriers, comp grid ---------- */
 async function viewInsurance(v) {
-  v.innerHTML = '<h2 style="margin:0 0 12px">Insurance — your book of business</h2>';
-  const [e, risk, carr, cg] = await Promise.all([
-    api('/insurance/earnings'), api('/insurance/at-risk'), api('/insurance/by-carrier'), api('/insurance/comp-grid')
+  v.innerHTML = '';
+  const head = el(`<div style="display:flex;align-items:center;gap:10px;margin:0 0 12px;flex-wrap:wrap">
+     <h2 style="margin:0">Insurance — your book of business</h2>
+     <button class="btn ghost sm right" data-recon>⇄ Reconcile carrier file</button></div>`);
+  head.querySelector('[data-recon]').onclick = openReconcile;
+  v.appendChild(head);
+  const [e, risk, carr, cg, per] = await Promise.all([
+    api('/insurance/earnings'), api('/insurance/at-risk'), api('/insurance/by-carrier'), api('/insurance/comp-grid'), api('/insurance/persistency')
   ]);
 
   // top numbers
   const nb = el('<div class="numberbar"></div>');
-  nb.appendChild(el(`<div class="stat"><div class="k">In-force premium (IP)</div><div class="v">${money(e.IP)}</div><div class="bar"><i style="width:${e.ip_ratio}%"></i></div><div class="muted" style="font-size:12px;margin-top:6px">${e.ip_ratio}% of ${money(e.AP)} sold (AP)</div></div>`));
-  nb.appendChild(el(`<div class="stat"><div class="k">Monthly commission</div><div class="v">${money(e.monthly_commission)}</div><div class="muted" style="font-size:12px;margin-top:6px">${money(e.annual_run_rate)}/yr run-rate</div></div>`));
-  nb.appendChild(el(`<div class="stat"><div class="k">In-force policies</div><div class="v">${e.counts.inforce}</div><div class="muted" style="font-size:12px;margin-top:6px">${e.counts.paying} actively paying</div></div>`));
-  nb.appendChild(el(`<div class="stat"><div class="k">Chargeback exposure</div><div class="v" style="color:${risk.totals.missed>0?'var(--cold)':'var(--warn)'}">${money(risk.totals.exposure_total)}</div><div class="muted" style="font-size:12px;margin-top:6px">${risk.totals.missed} missed · ${money(risk.totals.missed_exposure)} at risk now</div></div>`));
+  nb.appendChild(el(`<div class="stat"><div class="k">In-force premium (IP) ${info('IP')}</div><div class="v">${money(e.IP)}</div><div class="bar"><i style="width:${e.ip_ratio}%"></i></div><div class="muted" style="font-size:12px;margin-top:6px">${e.ip_ratio}% of ${money(e.AP)} sold (AP)</div></div>`));
+  nb.appendChild(el(`<div class="stat"><div class="k">Monthly commission ${info('monthlyComm')}</div><div class="v">${money(e.monthly_commission)}</div><div class="muted" style="font-size:12px;margin-top:6px">${money(e.annual_run_rate)}/yr run-rate</div></div>`));
+  const pTxt = per.by_count == null ? '—' : per.by_count + '%';
+  nb.appendChild(el(`<div class="stat"><div class="k">Persistency ${info('persistency')}</div><div class="v" style="color:${per.by_count>=85?'var(--good)':per.by_count==null?'inherit':'var(--warn)'}">${pTxt}</div><div class="muted" style="font-size:12px;margin-top:6px">${per.by_premium!=null?per.by_premium+'% by premium · ':''}${per.terminated} lapsed of ${per.placed}${per.p13!=null?' · 13-mo '+per.p13+'%':''}</div></div>`));
+  nb.appendChild(el(`<div class="stat"><div class="k">Chargeback exposure ${info('chargeback')}</div><div class="v" style="color:${risk.totals.missed>0?'var(--cold)':'var(--warn)'}">${money(risk.totals.exposure_total)}</div><div class="muted" style="font-size:12px;margin-top:6px">${risk.totals.missed} missed · ${money(risk.totals.missed_exposure)} at risk now</div></div>`));
   v.appendChild(nb);
+  if (per.cohort_note) v.appendChild(el(`<p class="muted" style="margin:-6px 0 12px;font-size:12px">${esc(per.cohort_note)}</p>`));
 
   // deposit forecast
   v.appendChild(el('<div class="section-h" style="margin-top:6px">6-month deposit forecast</div>'));
@@ -293,13 +404,15 @@ async function fireIntake() {
 
 /* ---------- The Number bar (shared header) ---------- */
 async function numberBar() {
-  const s = await api('/scoreboard');
+  const s = await api('/scoreboard?range=' + SB_RANGE);
   const wrap = el('<div class="numberbar"></div>');
   const pace = s.onPace ? '<span class="tag-pace pace-on">ON PACE</span>' : '<span class="tag-pace pace-off">BEHIND</span>';
   const pct = s.agencyGoal ? Math.min(100, Math.round(s.agencyAP / s.agencyGoal * 100)) : 0;
+  const rangeLabel = { wtd: 'week-to-date', mtd: 'month-to-date', ytd: 'year-to-date' }[s.range || 'mtd'];
+  const delta = s.apDelta == null ? '' : `<span class="${s.apDelta>=0?'delta-up':'delta-down'}" style="font-size:12px;font-weight:700" title="${esc(DEFS.delta)}">${s.apDelta>=0?'▲':'▼'} ${Math.abs(s.apDelta)}%</span>`;
   wrap.appendChild(el(`<div class="stat">
-     <div class="k">Agency AP · month-to-date</div>
-     <div class="v">${money(s.agencyAP)} <small>/ ${money(s.agencyGoal)} ${pace}</small></div>
+     <div class="k">Agency AP · ${rangeLabel} ${info('AP')}</div>
+     <div class="v">${money(s.agencyAP)} <small>/ ${money(s.agencyGoal)} ${pace}</small> ${delta}</div>
      <div class="bar"><i style="width:${pct}%"></i></div></div>`));
   wrap.appendChild(el(`<div class="stat"><div class="k">Expected by today</div>
      <div class="v">${money(s.expectedByNow)}</div>
@@ -672,7 +785,11 @@ async function viewResources(v) {
 /* ---------- Scoreboard ---------- */
 async function viewScoreboard(v) {
   v.innerHTML = '';
-  const s = await api('/scoreboard');
+  const toggle = el(`<div style="display:flex;justify-content:flex-end;margin-bottom:10px">
+    <div class="range-toggle">${['wtd','mtd','ytd'].map(r=>`<button data-r="${r}" class="${SB_RANGE===r?'on':''}">${r.toUpperCase()}</button>`).join('')}</div></div>`);
+  toggle.querySelectorAll('[data-r]').forEach(b => b.onclick = () => { SB_RANGE = b.dataset.r; render(); });
+  v.appendChild(toggle);
+  const s = await api('/scoreboard?range=' + SB_RANGE);
   v.appendChild(await numberBar());
   if (s.scope !== 'team') {
     v.appendChild(el(`<div class="card" style="padding:18px;max-width:520px">
