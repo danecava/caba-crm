@@ -413,6 +413,11 @@ async function api(req, res, url, user) {
     return send(res, 200, admin.importData(payload, user.id));
   }
 
+  if (p === '/api/admin/rerate' && req.method === 'POST') {
+    if (user.role !== 'owner') return send(res, 403, { error: 'Owner only' });
+    return send(res, 200, admin.rerateBook());
+  }
+
   // ---- Sprint 1: persistency + carrier reconciliation ----
   if (p === '/api/insurance/persistency' && req.method === 'GET') return send(res, 200, insurance.persistency(user));
   if (p === '/api/insurance/reconcile' && req.method === 'POST') {
