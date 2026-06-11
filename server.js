@@ -19,6 +19,7 @@ const insurance = require('./lib/insurance');
 insurance.init();
 const admin = require('./lib/admin');
 const discord = require('./lib/discord');
+const ingest = require('./lib/ingest');
 const RECRUIT_ROLES = ['owner','admin','manager','recruiter'];
 
 const PORT = process.env.PORT || 3000;
@@ -73,6 +74,21 @@ async function api(req, res, url, user) {
     auth.recordSuccess(email);
     const token = auth.sign({ uid: u.id, role: u.role });
     return send(res, 200, { token, user: { id: u.id, name: u.name, role: u.role, email: u.email }, must_change_password: !!u.must_change_password });
+  }
+
+  // ---- Phase 2: carrier-email ingest (machine-to-machine, shared-secret auth) ----
+  // The Gmail/Discord bot POSTs parsed carrier events here. Auth = INGEST_TOKEN
+  // (Railway env), NOT a user session. Accepts {events:[...]} or a single event.
+  if (p === '/api/ingest/carrier-event' && req.method === 'POST') {
+    const expected = process.env.INGEST_TOKEN || '';
+    const hdr = req.headers['authorization'] || '';
+    const tok = (hdr.startsWith('Bearer ') ? hdr.slice(7) : '') || req.headers['x-ingest-token'] || '';
+    if (!expected) return send(res, 503, { error: 'Ingest not configured (set INGEST_TOKEN).' });
+    if (tok !== expected) return send(res, 401, { error: 'Bad ingest token' });
+    const body = await readBody(req);
+    const events = Array.isArray(body.events) ? body.events : (body.event_type ? [body] : []);
+    const results = events.map((e) => { try { return ingest.applyEvent(e); } catch (err) { return { kind: 'skipped', message: 'error: ' + (err.message || err) }; } });
+    return send(res, 200, { ok: true, results, summary: ingest.summarize(results) });
   }
 
   // everything below requires a valid session
@@ -400,23 +416,9 @@ async function api(req, res, url, user) {
   if (m && req.method === 'POST') {
     const id = +m[1]; const { status } = await readBody(req);
     insurance.markPayment(id, status);
-    // chargeback-save workflow + Discord alerts
+    // chargeback-save workflow + Discord alerts (shared with the carrier-email ingest)
     const pol = db.prepare(`SELECT pl.*, l.first_name, l.last_name, l.id AS lead_id FROM policies pl LEFT JOIN leads l ON l.id=pl.lead_id WHERE pl.id=?`).get(id);
-    if (pol) {
-      const name = `${pol.first_name||''} ${pol.last_name||''}`.trim() || 'Client';
-      const annual = Math.round((pol.monthly_premium || (pol.annual_premium ? pol.annual_premium/12 : 0)) * 12);
-      const m2 = (() => { if (!pol.effective_date) return null; const f = new Date(pol.effective_date); return Math.max(0, Math.round((Date.now()-f)/2.63e9)); })();
-      const exposure = Math.round(annual * ((pol.comm_pct||0)/100) * (m2==null?1:Math.max(0,(12-m2)/12)));
-      if (status === 'missed' && pol.lead_id) {
-        try { engine.enqueueCadence(pol.lead_id, 'save_missed'); engine.processDue(); } catch {}
-        discord.notify(`⚠️ **Missed payment — SAVE NOW**\n${name} · ${pol.carrier||''}${pol.policy_number? ' · '+pol.policy_number:''}\n$${annual}/yr · ~$${exposure} chargeback exposure${m2!=null? ' · '+m2+' mo on books':''}\nSave task created — recover the draft within 30 days to keep your advance.`);
-      } else if (status === 'active' && pol.lead_id) {
-        try { engine.pauseLead(pol.lead_id, 'recovered'); } catch {}
-        discord.notify(`✅ **Recovered** — ${name} · ${pol.carrier||''} is back on draft. Advance protected. Nice save. 💰`);
-      } else if (status === 'chargeback') {
-        discord.notify(`🔻 **Chargeback** — ${name} · ${pol.carrier||''}${pol.policy_number? ' · '+pol.policy_number:''} lapsed past the save window. ~$${exposure} clawed back.`);
-      }
-    }
+    ingest.fireWorkflow(pol, status);
     return send(res, 200, { ok: true });
   }
   if (p === '/api/admin/discord-test' && req.method === 'POST') {
