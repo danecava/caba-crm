@@ -91,6 +91,28 @@ async function api(req, res, url, user) {
     return send(res, 200, { ok: true, results, summary: ingest.summarize(results) });
   }
 
+  // ---- Phase 2b: phone/Discord assistant relay (same shared-secret auth) ----
+  // The Discord bot forwards "cava <question>" here; answers come from the
+  // owner-scoped AI assistant over live CRM data. Read-only — no writes.
+  if (p === '/api/ingest/assistant' && req.method === 'POST') {
+    const expected = process.env.INGEST_TOKEN || '';
+    const hdr = req.headers['authorization'] || '';
+    const tok = (hdr.startsWith('Bearer ') ? hdr.slice(7) : '') || req.headers['x-ingest-token'] || '';
+    if (!expected) return send(res, 503, { error: 'Ingest not configured (set INGEST_TOKEN).' });
+    if (tok !== expected) return send(res, 401, { error: 'Bad ingest token' });
+    const body = await readBody(req);
+    const owner = db.prepare("SELECT id,name,email,role,upline_id,monthly_goal_ap FROM users WHERE role='owner' AND active=1 LIMIT 1").get();
+    if (!owner) return send(res, 500, { error: 'No owner account' });
+    const question = String(body.q || '').slice(0, 500).trim();
+    if (!question) return send(res, 400, { error: 'Missing q' });
+    try {
+      if (/^brief(ing)?\b/i.test(question)) return send(res, 200, await ai.briefing(owner));
+      return send(res, 200, await ai.assistant(owner, question));
+    } catch (e) {
+      return send(res, 500, { error: 'Assistant error', detail: String(e.message || e) });
+    }
+  }
+
   // everything below requires a valid session
   if (!user) return send(res, 401, { error: 'Unauthorized' });
 
