@@ -117,17 +117,48 @@ async function api(req, res, url, user) {
     return send(res, 200, { stages: STAGES, leads: rows });
   }
 
-  // ---- Call-Next: top scored, actionable leads ----
+  // ---- Call-Next: SAVE calls first (chargeback risk), then top scored leads ----
   if (p === '/api/call-next' && req.method === 'GET') {
     const scope = auth.leadScope(user, 'l');
+
+    // 1) Missed-payment policies = money already on the books walking out.
+    //    These outrank every prospecting call, ordered by chargeback exposure.
+    const saveRows = db.prepare(
+      `SELECT l.*, u.name AS owner_name, pl.id AS policy_id, pl.carrier AS save_carrier,
+              pl.policy_number, pl.comm_pct, pl.effective_date,
+              COALESCE(pl.monthly_premium, pl.annual_premium/12.0)*12 AS save_annual
+       FROM policies pl JOIN leads l ON l.id=pl.lead_id LEFT JOIN users u ON u.id=l.owner_id
+       WHERE ${scope.sql} AND pl.status='issued_paid' AND pl.payment_status='missed' AND l.dnc=0`)
+      .all(...scope.params);
+    const CB = insurance.CHARGEBACK_MONTHS || 12;
+    saveRows.forEach((r) => {
+      let mob = null;
+      if (r.effective_date) {
+        const f = new Date(r.effective_date), n = new Date();
+        if (!isNaN(f)) mob = Math.max(0, (n.getFullYear() - f.getFullYear()) * 12 + (n.getMonth() - f.getMonth()));
+      }
+      const monthsLeft = mob == null ? CB : Math.max(0, CB - mob);
+      const exposure = Math.round((r.save_annual || 0) * ((r.comm_pct || 0) / 100) * (monthsLeft / CB));
+      r.exposure = exposure;
+      r.is_save = true;
+      r.score = exposure; // exposure IS the score for saves
+      r.hours_since = Math.round(hoursSince(r.last_contact_at));
+      r.why = `🔥 SAVE CALL — missed payment · ${r.save_carrier || ''}${r.policy_number ? ' #' + r.policy_number : ''} · ~$${exposure} advance at risk${mob != null ? ' · ' + mob + ' mo on books' : ''}`;
+    });
+    saveRows.sort((a, b) => b.exposure - a.exposure);
+    const saveLeadIds = new Set(saveRows.map((r) => r.id));
+
+    // 2) Regular prospecting queue (excluding anyone already in the save list).
     const rows = db.prepare(
       `SELECT l.*, u.name AS owner_name FROM leads l LEFT JOIN users u ON u.id=l.owner_id
-       WHERE ${scope.sql} AND l.stage NOT IN ('Issued-Paid','Retention') AND l.dnc=0`).all(...scope.params);
+       WHERE ${scope.sql} AND l.stage NOT IN ('Issued-Paid','Retention') AND l.dnc=0`).all(...scope.params)
+      .filter((r) => !saveLeadIds.has(r.id));
     rows.forEach((r) => { r.score = scoreLead(r); r.hours_since = Math.round(hoursSince(r.last_contact_at)); });
     rows.sort((a, b) => b.score - a.score);
-    const top = rows.slice(0, 8);
-    top.forEach((r) => { r.why = ai.explain(r); });
-    return send(res, 200, { leads: top });
+
+    const top = [...saveRows, ...rows].slice(0, Math.max(10, saveRows.length + 5));
+    top.forEach((r) => { if (!r.why) r.why = ai.explain(r); });
+    return send(res, 200, { leads: top, saves: saveRows.length, save_exposure: saveRows.reduce((s2, r) => s2 + r.exposure, 0) });
   }
 
   // ---- lead detail + timeline ----
