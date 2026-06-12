@@ -141,6 +141,23 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 </section>
 
 <div id="modalRoot"></div>
+<script>
+/* Remember the last email used so sign-in only ever needs the password. */
+(function(){
+  var e = document.getElementById('email'), p = document.getElementById('password');
+  try {
+    var v = localStorage.getItem('cava_email');
+    if (v && e) { e.value = v; if (p) p.focus(); }
+  } catch (_) {}
+  var btn = document.querySelector('#login .btn');
+  if (btn && e) btn.addEventListener('click', function(){
+    try { if (e.value.trim()) localStorage.setItem('cava_email', e.value.trim()); } catch (_) {}
+  }, true);
+  if (p && e) p.addEventListener('keydown', function(ev){
+    if (ev.key === 'Enter') { try { if (e.value.trim()) localStorage.setItem('cava_email', e.value.trim()); } catch (_) {} }
+  }, true);
+})();
+</script>
 <script src="app.js"></script>
 </body>
 </html>
